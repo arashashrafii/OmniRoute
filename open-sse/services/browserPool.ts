@@ -295,7 +295,7 @@ export function resolvePlainBrowserLaunchOptions(
   const headless = options.headless !== false;
   return {
     headless,
-    ...(!headless && options.executablePath ? { executablePath: options.executablePath } : {}),
+    ...(options.executablePath ? { executablePath: options.executablePath } : {}),
     args: [
       "--no-sandbox",
       "--disable-dev-shm-usage",

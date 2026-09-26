@@ -28,6 +28,17 @@ describe("resolvePlainBrowserLaunchOptions", () => {
     );
     assert.equal(options.args?.includes("--window-position=-32000,-32000"), true);
   });
+
+  it("uses an explicitly selected system browser without showing a window in headless sessions", () => {
+    const options = resolvePlainBrowserLaunchOptions({
+      headless: true,
+      executablePath: "/usr/bin/google-chrome",
+    });
+
+    assert.equal(options.headless, true);
+    assert.equal(options.executablePath, "/usr/bin/google-chrome");
+    assert.equal(options.args?.includes("--window-position=-32000,-32000"), false);
+  });
 });
 
 describe("resolvePlaywrightProxy", () => {
