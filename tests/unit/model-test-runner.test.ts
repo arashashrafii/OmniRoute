@@ -325,6 +325,11 @@ test("resolveModelTestTimeoutMs gives zai-web checks up to 60 seconds", () => {
   assert.equal(resolveModelTestTimeoutMs("zai-web", "zai-web/glm-5.3-flash", 90_000), 90_000);
 });
 
+test("resolveModelTestTimeoutMs gives ChatGPT Web checks up to 90 seconds", () => {
+  assert.equal(resolveModelTestTimeoutMs("chatgpt-web", "gpt-5.6-luna-free", 30_000), 90_000);
+  assert.equal(resolveModelTestTimeoutMs("CHATGPT-WEB", "chatgpt-web/gpt-5-5", 120_000), 120_000);
+});
+
 // ---------------------------------------------------------------------------
 // classifyTestErrorQuota — #9511 quota classification for Test All auto-hide.
 // Distinguishes three outcomes:
