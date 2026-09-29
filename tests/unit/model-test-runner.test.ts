@@ -330,6 +330,17 @@ test("resolveModelTestTimeoutMs gives ChatGPT Web checks up to 90 seconds", () =
   assert.equal(resolveModelTestTimeoutMs("CHATGPT-WEB", "chatgpt-web/gpt-5-5", 120_000), 120_000);
 });
 
+test("runSingleModelTest skips web-session providers before sending a chat probe", async () => {
+  const result = await runSingleModelTest({
+    providerId: "deepseek-web",
+    modelId: "deepseek-v4-pro-think",
+  });
+
+  assert.equal(result.status, "error");
+  assert.equal(result.httpStatus, 422);
+  assert.match(result.error ?? "", /Skipped:.*web-session/i);
+});
+
 // ---------------------------------------------------------------------------
 // classifyTestErrorQuota — #9511 quota classification for Test All auto-hide.
 // Distinguishes three outcomes:
