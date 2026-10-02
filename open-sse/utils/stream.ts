@@ -2846,8 +2846,17 @@ export function createSSEStream(options: StreamOptions = {}) {
                   );
                 }
                 // Hardening: log empty assistant response after tool completion
-                // for observability — helps diagnose Copilot "Sorry, no response was returned"
-                if (passthroughHasToolCalls && !content.trim() && !reasoning.trim()) {
+                // for observability — helps diagnose Copilot "Sorry, no response was returned".
+                // A turn whose ONLY payload is tool_calls is complete and correct, not empty: the
+                // warning fired for every ChatGPT Web tool turn (4x in one E2E run) and read like a
+                // defect. Only report the genuinely suspicious case — no content, no reasoning AND
+                // no tool calls made it into the message.
+                if (
+                  passthroughHasToolCalls &&
+                  !content.trim() &&
+                  !reasoning.trim() &&
+                  passthroughToolCalls.size === 0
+                ) {
                   console.warn(
                     `[STREAM] Empty assistant response after tool_calls completion (${provider || "provider"}:${model || "unknown"}) — sessionId=${sessionId}`
                   );
