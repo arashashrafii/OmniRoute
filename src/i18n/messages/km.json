@@ -2904,6 +2904,14 @@
     "openClawManualConfiguration": "Open Claw - ការកំណត់រចនាសម្ព័ន្ធដោយដៃ",
     "clineManualConfiguration": "ការកំណត់រចនាសម្ព័ន្ធ Cline ដោយដៃ",
     "kiloManualConfiguration": "ការកំណត់រចនាសម្ព័ន្ធ Kilo Code ដោយដៃ",
+    "piManualConfiguration": "__MISSING__:Pi - Manual Configuration",
+    "piConfigInvalidTitle": "__MISSING__:Pi models.json is unreadable",
+    "piOmnirouteConfigured": "__MISSING__:OmniRoute is configured as a Pi custom provider",
+    "piModelHelp": "__MISSING__:Pi does not auto-discover models for custom endpoints — the model you pick is written into models.json explicitly.",
+    "piManualConfigTitle": "__MISSING__:Or edit ~/.pi/agent/models.json manually",
+    "piManualConfigSample": "__MISSING__:{\n  \"providers\": {\n    \"omniroute\": {\n      \"baseUrl\": \"http://127.0.0.1:20128/v1\",\n      \"api\": \"openai-completions\",\n      \"apiKey\": \"sk_omniroute\",\n      \"models\": [\n        { \"id\": \"auto/best-coding\", \"name\": \"OmniRoute best-coding\" }\n      ]\n    }\n  }\n}",
+    "piManualConfigHint": "__MISSING__:Then start Pi and select the omniroute provider. Set PI_CODING_AGENT_DIR to move the whole agent directory.",
+    "piUnownedNote": "__MISSING__:This entry was added outside OmniRoute (e.g. pi-gui's Custom endpoints). Applying will adopt it; Reset only removes entries OmniRoute wrote.",
     "whenToUseLabel": "ពេលណាត្រូវប្រើ",
     "openToolDocs": "បើកឯកសារណែនាំរបស់ឧបករណ៍",
     "toolUseCases": {
@@ -3215,7 +3223,13 @@
     "cliproxyapiUnknown": "មិនស្គាល់",
     "cliproxyapiUpdate": "ធ្វើបច្ចុប្បន្នភាព",
     "cliproxyapiUpdateAvailable": "មានបច្ចុប្បន្នភាព៖ v{current} → v{latest}",
-    "cliproxyapiVersion": "កំណែ"
+    "cliproxyapiVersion": "កំណែ",
+    "piInstallTitle": "__MISSING__:Install Pi Coding Agent",
+    "piInstallInstructions": "__MISSING__:Install the Pi CLI, then return here to connect it to OmniRoute.",
+    "piInstallCommand": "__MISSING__:npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+    "piEndpoint": "__MISSING__:OmniRoute URL",
+    "piEndpointHelp": "__MISSING__:Use the URL reachable from the machine running Pi. The OpenAI-compatible /v1 endpoint is added automatically.",
+    "piManualMergeHint": "__MISSING__:Preview only. Merge this providers.omniroute entry into models.json so your other providers and settings stay intact."
   },
   "combos": {
     "title": "បន្សំ",

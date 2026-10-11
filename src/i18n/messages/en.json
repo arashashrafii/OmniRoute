@@ -2904,6 +2904,14 @@
     "openClawManualConfiguration": "Open Claw - Manual Configuration",
     "clineManualConfiguration": "Cline Manual Configuration",
     "kiloManualConfiguration": "Kilo Code Manual Configuration",
+    "piManualConfiguration": "Pi - Manual Configuration",
+    "piConfigInvalidTitle": "Pi models.json is unreadable",
+    "piOmnirouteConfigured": "OmniRoute is configured as a Pi custom provider",
+    "piModelHelp": "Pi does not auto-discover models for custom endpoints — the model you pick is written into models.json explicitly.",
+    "piManualConfigTitle": "Or edit ~/.pi/agent/models.json manually",
+    "piManualConfigSample": "{\n  \"providers\": {\n    \"omniroute\": {\n      \"baseUrl\": \"http://127.0.0.1:20128/v1\",\n      \"api\": \"openai-completions\",\n      \"apiKey\": \"sk_omniroute\",\n      \"models\": [\n        { \"id\": \"auto/best-coding\", \"name\": \"OmniRoute best-coding\" }\n      ]\n    }\n  }\n}",
+    "piManualConfigHint": "Then start Pi and select the omniroute provider. Set PI_CODING_AGENT_DIR to move the whole agent directory.",
+    "piUnownedNote": "This entry was added outside OmniRoute (e.g. pi-gui's Custom endpoints). Applying will adopt it; Reset only removes entries OmniRoute wrote.",
     "whenToUseLabel": "When to use",
     "openToolDocs": "Open tool docs",
     "toolUseCases": {
@@ -3215,7 +3223,13 @@
     "cliproxyapiUnknown": "Unknown",
     "cliproxyapiUpdate": "Update",
     "cliproxyapiUpdateAvailable": "Update available: v{current} → v{latest}",
-    "cliproxyapiVersion": "Version"
+    "cliproxyapiVersion": "Version",
+    "piInstallTitle": "Install Pi Coding Agent",
+    "piInstallInstructions": "Install the Pi CLI, then return here to connect it to OmniRoute.",
+    "piInstallCommand": "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+    "piEndpoint": "OmniRoute URL",
+    "piEndpointHelp": "Use the URL reachable from the machine running Pi. The OpenAI-compatible /v1 endpoint is added automatically.",
+    "piManualMergeHint": "Preview only. Merge this providers.omniroute entry into models.json so your other providers and settings stay intact."
   },
   "combos": {
     "title": "Combos",
