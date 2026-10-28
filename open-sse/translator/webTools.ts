@@ -312,6 +312,46 @@ function normalizeLooseJson(value: string): string {
 }
 
 /**
+ * Recover the top-level string arguments of a malformed envelope by delimiting each value with the
+ * NEXT key marker instead of by quotes (see repairToolEnvelopeJson, shape 2).
+ */
+function parseRepairedArguments(argsText: string): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  // Top-level keys are exactly the quoted names that follow `{` or `","`, i.e. the object's
+  // own structure. Scanning for that literal shape avoids matching HTML attributes like
+  // `lang="en"` that live inside a string value.
+  const keyRe = /(?:\{|",)\s*"([^"]+)"\s*:/g;
+  const marks: Array<{ key: string; valueStart: number; next: number }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = keyRe.exec(argsText)) !== null) {
+    if (match[1] === "arguments") continue;
+    marks.push({
+      key: match[1],
+      valueStart: match.index + match[0].length,
+      next: argsText.length,
+    });
+  }
+  for (let index = 0; index + 1 < marks.length; index += 1) {
+    // The next key's `","name":"` marker ends this value: everything up to the `"` that
+    // closes the value belongs to it.
+    const nextKeyMarker = argsText.indexOf(
+      `","${marks[index + 1].key}":"`,
+      marks[index].valueStart
+    );
+    if (nextKeyMarker !== -1) marks[index].next = nextKeyMarker + 1;
+  }
+  for (let index = 0; index < marks.length; index += 1) {
+    const mark = marks[index];
+    const rawValue = argsText.slice(mark.valueStart, mark.next);
+    // The LAST key's value always runs to the end of the object body, whatever junk a
+    // mis-detected key left behind: cut it at its delimiter quote so structural characters
+    // (`"}`, `},`) cannot leak into the payload and break consumers like apply_patch.
+    args[mark.key] = decodeToolStringValue(rawValue, index === marks.length - 1);
+  }
+  return args;
+}
+
+/**
  * Repair the two malformations ChatGPT Web reliably produces when it copies a tool contract
  * that carries a large payload (for example a whole HTML file):
  *
@@ -357,40 +397,7 @@ export function repairToolEnvelopeJson(raw: string): string | null {
     const firstClose = argsText.search(/"\}{1,3}/);
     if (firstClose > 0) argsText = argsText.slice(0, firstClose + 1);
   }
-  const args: Record<string, unknown> = {};
-  if (argsText) {
-    // Top-level keys are exactly the quoted names that follow `{` or `","`, i.e. the object's
-    // own structure. Scanning for that literal shape avoids matching HTML attributes like
-    // `lang="en"` that live inside a string value.
-    const keyRe = /(?:\{|",)\s*"([^"]+)"\s*:/g;
-    const marks: Array<{ key: string; valueStart: number; next: number }> = [];
-    let match: RegExpExecArray | null;
-    while ((match = keyRe.exec(argsText)) !== null) {
-      if (match[1] === "arguments") continue;
-      marks.push({
-        key: match[1],
-        valueStart: match.index + match[0].length,
-        next: argsText.length,
-      });
-    }
-    for (let index = 0; index + 1 < marks.length; index += 1) {
-      // The next key's `","name":"` marker ends this value: everything up to the `"` that
-      // closes the value belongs to it.
-      const nextKeyMarker = argsText.indexOf(
-        `","${marks[index + 1].key}":"`,
-        marks[index].valueStart
-      );
-      if (nextKeyMarker !== -1) marks[index].next = nextKeyMarker + 1;
-    }
-    for (let index = 0; index < marks.length; index += 1) {
-      const mark = marks[index];
-      const rawValue = argsText.slice(mark.valueStart, mark.next);
-      // The LAST key's value always runs to the end of the object body, whatever junk a
-      // mis-detected key left behind: cut it at its delimiter quote so structural characters
-      // (`"}`, `},`) cannot leak into the payload and break consumers like apply_patch.
-      args[mark.key] = decodeToolStringValue(rawValue, index === marks.length - 1);
-    }
-  }
+  const args = argsText ? parseRepairedArguments(argsText) : {};
 
   const envelope: Record<string, unknown> = { name, arguments: args };
   if (trailingNonce) envelope._nonce = trailingNonce;
@@ -502,6 +509,25 @@ export function toArgumentsString(value: unknown): string {
   }
 }
 
+/** One `- name: description\n  parameters: {...}` entry of the serialized tool list. */
+function formatToolPromptLine(
+  fn: NonNullable<OpenAIToolDef["function"]>,
+  descriptionMaxChars: number | undefined
+): string {
+  const rawDescription = typeof fn.description === "string" && fn.description ? fn.description : "";
+  const desc =
+    descriptionMaxChars !== undefined && rawDescription.length > descriptionMaxChars
+      ? `${rawDescription.slice(0, Math.max(0, descriptionMaxChars - 32))}\n…[description trimmed]`
+      : rawDescription;
+  let params = "";
+  try {
+    params = fn.parameters ? JSON.stringify(fn.parameters) : "";
+  } catch {
+    params = "";
+  }
+  return `- ${fn.name}${desc ? `: ${desc}` : ""}${params ? `\n  parameters: ${params}` : ""}`;
+}
+
 /**
  * Serialize an OpenAI `tools` array into a system-prompt block that instructs the
  * web UI model how to invoke a tool (emit a `<tool>{...}</tool>` block). Returns an
@@ -525,22 +551,7 @@ export function serializeToolsToPrompt(
   for (const t of tools as OpenAIToolDef[]) {
     const fn = t?.function;
     if (!fn?.name) continue;
-    const rawDescription =
-      typeof fn.description === "string" && fn.description ? fn.description : "";
-    const descriptionMaxChars = options.descriptionMaxChars;
-    const desc =
-      descriptionMaxChars !== undefined && rawDescription.length > descriptionMaxChars
-        ? `${rawDescription.slice(0, Math.max(0, descriptionMaxChars - 32))}\n…[description trimmed]`
-        : rawDescription;
-    let params = "";
-    try {
-      params = fn.parameters ? JSON.stringify(fn.parameters) : "";
-    } catch {
-      params = "";
-    }
-    lines.push(
-      `- ${fn.name}${desc ? `: ${desc}` : ""}${params ? `\n  parameters: ${params}` : ""}`
-    );
+    lines.push(formatToolPromptLine(fn, options.descriptionMaxChars));
   }
 
   if (lines.length === 0) return "";

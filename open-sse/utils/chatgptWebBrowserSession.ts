@@ -161,6 +161,21 @@ function requireFirstPartyUrl(value: string): void {
   }
 }
 
+/** The string parts of an assistant text message, or null for any other message shape. */
+function assistantTextParts(message: JsonRecord): string[] | null {
+  const author = isRecord(message.author) ? message.author : null;
+  const content = isRecord(message.content) ? message.content : null;
+  const parts = Array.isArray(content?.parts) ? content.parts : [];
+  if (
+    author?.role !== "assistant" ||
+    content?.content_type !== "text" ||
+    !parts.every((part) => typeof part === "string")
+  ) {
+    return null;
+  }
+  return parts as string[];
+}
+
 function maybeTerminalResult(
   snapshot: unknown,
   conversationId: string,
@@ -168,17 +183,9 @@ function maybeTerminalResult(
 ): ChatGptWebBrowserTurnResult | null {
   if (!isRecord(snapshot) || !isRecord(snapshot.message)) return null;
   const message = snapshot.message;
-  const author = isRecord(message.author) ? message.author : null;
-  const content = isRecord(message.content) ? message.content : null;
-  const parts = Array.isArray(content?.parts) ? content.parts : [];
+  const parts = assistantTextParts(message);
   const toolCalls = extractToolCalls(message) ?? [];
-  if (
-    author?.role !== "assistant" ||
-    content?.content_type !== "text" ||
-    !parts.every((part) => typeof part === "string") ||
-    message.status !== "finished_successfully" ||
-    message.end_turn !== true
-  ) {
+  if (!parts || message.status !== "finished_successfully" || message.end_turn !== true) {
     return null;
   }
   return {
@@ -233,20 +240,61 @@ function extractToolCalls(message: JsonRecord): ChatGptWebBrowserTurnResult["too
   for (const candidate of candidates) {
     if (!Array.isArray(candidate)) continue;
     for (const item of candidate) {
-      if (!isRecord(item)) continue;
-      const fn = isRecord(item.function) ? item.function : item;
-      const name =
-        typeof fn.name === "string" ? fn.name : typeof item.name === "string" ? item.name : "";
-      if (!name) continue;
-      const args = fn.arguments ?? item.arguments ?? fn.input ?? item.input ?? {};
-      calls.push({
-        id: typeof item.id === "string" ? item.id : `call_chatgpt_${calls.length + 1}`,
-        type: "function",
-        function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
-      });
+      const call = toBrowserToolCall(item, calls.length + 1);
+      if (call) calls.push(call);
     }
   }
   return calls;
+}
+
+/** One native tool/function call item as an OpenAI tool call, or null when it has no name. */
+function toBrowserToolCall(
+  item: unknown,
+  ordinal: number
+): NonNullable<ChatGptWebBrowserTurnResult["toolCalls"]>[number] | null {
+  if (!isRecord(item)) return null;
+  const fn = isRecord(item.function) ? item.function : item;
+  const name =
+    typeof fn.name === "string" ? fn.name : typeof item.name === "string" ? item.name : "";
+  if (!name) return null;
+  const args = fn.arguments ?? item.arguments ?? fn.input ?? item.input ?? {};
+  return {
+    id: typeof item.id === "string" ? item.id : `call_chatgpt_${ordinal}`,
+    type: "function",
+    function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
+  };
+}
+
+/**
+ * Fail fast on a dead turn while no new assistant answer is visible; returns the updated
+ * empty-bubble timestamp.
+ */
+function assertAssistantTurnAlive(
+  state: { count: number; streaming: boolean; emptyNode: boolean },
+  initial: number,
+  emptySince: number,
+  startedAt: number
+): number {
+  let since = emptySince;
+  // An assistant bubble that mounted, finished generating (no stop button) and stayed empty
+  // is a dead turn: ChatGPT produced no answer for this attempt. Observed live as
+  // `<div class="flex w-full flex-col gap-1 empty:hidden"></div>` with no stream text —
+  // waiting the full budget only burns 153s before the retry that succeeds in ~15s.
+  // Fail fast so the adapter retries immediately instead.
+  if (state.count > initial && !state.streaming && state.emptyNode) {
+    if (!since) since = Date.now();
+    else if (Date.now() - since >= COMPOSER_EMPTY_ASSISTANT_GRACE_MS) {
+      throw new Error("ChatGPT Web assistant response stayed empty");
+    }
+  } else {
+    since = 0;
+  }
+  // No assistant text at all for the whole grace window: the reply never started. Fail fast
+  // (retryable) rather than wait out the budget for an answer that is not coming.
+  if (Date.now() - startedAt >= COMPOSER_NO_ANSWER_DEADLINE_MS) {
+    throw new Error("ChatGPT Web assistant response never started");
+  }
+  return since;
 }
 
 function snapshotMessageRole(snapshot: unknown): string | null {
@@ -887,24 +935,7 @@ export class PlaywrightChatGptWebBrowserSession implements ChatGptWebBrowserSess
       void nextDiagAt;
       if (!isNewAssistantAnswer(state, { count: initial, text: initialText })) {
         stableTicks = 0;
-        // An assistant bubble that mounted, finished generating (no stop button) and stayed empty
-        // is a dead turn: ChatGPT produced no answer for this attempt. Observed live as
-        // `<div class="flex w-full flex-col gap-1 empty:hidden"></div>` with no stream text —
-        // waiting the full budget only burns 153s before the retry that succeeds in ~15s.
-        // Fail fast so the adapter retries immediately instead.
-        if (state.count > initial && !state.streaming && state.emptyNode) {
-          if (!emptySince) emptySince = Date.now();
-          else if (Date.now() - emptySince >= COMPOSER_EMPTY_ASSISTANT_GRACE_MS) {
-            throw new Error("ChatGPT Web assistant response stayed empty");
-          }
-        } else {
-          emptySince = 0;
-        }
-        // No assistant text at all for the whole grace window: the reply never started. Fail fast
-        // (retryable) rather than wait out the budget for an answer that is not coming.
-        if (Date.now() - startedAt >= COMPOSER_NO_ANSWER_DEADLINE_MS) {
-          throw new Error("ChatGPT Web assistant response never started");
-        }
+        emptySince = assertAssistantTurnAlive(state, initial, emptySince, startedAt);
         continue;
       }
       emptySince = 0;
@@ -916,7 +947,18 @@ export class PlaywrightChatGptWebBrowserSession implements ChatGptWebBrowserSess
       }
       last = state.text;
     }
-    const deep = await this.page
+    const deep = await this.readRenderedDiagnostics();
+    console.warn(
+      `[chatgpt-web] rendered read gave up after ${timeoutMs}ms: ` +
+        `last=${JSON.stringify(lastState)} returnedLen=${last.trim().length} ` +
+        `deep=${JSON.stringify(deep)}`
+    );
+    return last.trim() ? last.trim() : null;
+  }
+
+  /** Page snapshot logged when a rendered read gives up. Never returned to clients. */
+  private async readRenderedDiagnostics(): Promise<Record<string, unknown>> {
+    return this.page
       .evaluate(() => {
         const nodes = Array.from(
           document.querySelectorAll<HTMLElement>("[data-message-author-role]")
@@ -935,11 +977,5 @@ export class PlaywrightChatGptWebBrowserSession implements ChatGptWebBrowserSess
         };
       })
       .catch((error) => ({ evaluateFailed: String(error).slice(0, 120) }));
-    console.warn(
-      `[chatgpt-web] rendered read gave up after ${timeoutMs}ms: ` +
-        `last=${JSON.stringify(lastState)} returnedLen=${last.trim().length} ` +
-        `deep=${JSON.stringify(deep)}`
-    );
-    return last.trim() ? last.trim() : null;
   }
 }
