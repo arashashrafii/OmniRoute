@@ -8,6 +8,7 @@ import { getPiModelsPath } from "./piConfig";
 import { getCachedLoginShellPath, mergeShellPath } from "./loginShellPath";
 import { withSettingsFallback } from "./cliInstallFallback";
 import { GROK_BUILD_RUNTIME_ENTRY, AMP_RUNTIME_ENTRY } from "./cliRuntimeGrokBuild";
+import { WHYCODES_RUNTIME_ENTRY } from "./cliRuntimeWhyCodes";
 import { isLocationTrusted, findKnownPathMatch } from "./cliRuntimeKnownPath";
 import { buildHealthcheckPath } from "./cliRuntimeHealthcheckPath";
 import { appendWindowsKnownBinPaths, mergeWindowsLookupPath } from "./cliRuntimeWindowsNode";
@@ -348,6 +349,7 @@ const CLI_TOOLS: Record<string, any> = {
       authProfiles: "auth-profiles",
     },
   },
+  whycodes: WHYCODES_RUNTIME_ENTRY,
 };
 
 /**
@@ -375,7 +377,11 @@ export const normalizeCliToolId = (toolId: string): string => {
   return CLI_TOOL_ALIASES[normalized] || normalized;
 };
 
-const isWindows = () => process.platform === "win32";
+// This module is bundled on Linux for Windows installations. Turbopack can
+// constant-fold process.platform at build time and strip the Windows discovery
+// and where.exe branches, leaving CLI binaries undetectable on Windows (#17157).
+// os.platform() is evaluated at runtime, preserving both platform paths.
+const isWindows = () => os.platform() === "win32";
 
 /**
  * (#510) Normalize MSYS2/Git-Bash style paths to Windows-native paths.
