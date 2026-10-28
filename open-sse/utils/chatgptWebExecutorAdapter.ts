@@ -329,38 +329,41 @@ function compactTranscript(
   return blocks.map(({ text }) => text).join("\n\n");
 }
 
+/** Flattens one OpenAI chat message (text, assistant tool requests, tool results) to prompt text. */
+function normalizePromptMessage(value: unknown): { role: string; text: string } {
+  if (!isRecord(value) || typeof value.role !== "string") {
+    throw new Error("ChatGPT Web clean-room adapter received an invalid message");
+  }
+  if (!["system", "developer", "user", "assistant", "tool"].includes(value.role)) {
+    throw new Error("ChatGPT Web clean-room adapter does not support tool messages yet");
+  }
+  const text = contentText(value.content);
+  const toolCalls = Array.isArray(value.tool_calls)
+    ? value.tool_calls
+        .filter(isRecord)
+        .map((call) => {
+          const fn = isRecord(call.function) ? call.function : call;
+          const name = typeof fn.name === "string" ? fn.name : "";
+          const args =
+            typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+          const id = typeof call.id === "string" ? call.id : "unknown";
+          return name ? `Assistant tool request (${id}) ${name}: ${args}` : "";
+        })
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const toolResult =
+    value.role === "tool"
+      ? `Tool result${typeof value.tool_call_id === "string" ? ` (${value.tool_call_id})` : ""}: ${text || "(no output)"}`
+      : "";
+  return { role: value.role, text: [toolResult || text, toolCalls].filter(Boolean).join("\n") };
+}
+
 function buildPrompt(body: JsonRecord, tools: unknown[]): string {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new Error("ChatGPT Web clean-room adapter requires messages");
   }
-  const messages = body.messages.map((value) => {
-    if (!isRecord(value) || typeof value.role !== "string") {
-      throw new Error("ChatGPT Web clean-room adapter received an invalid message");
-    }
-    if (!["system", "developer", "user", "assistant", "tool"].includes(value.role)) {
-      throw new Error("ChatGPT Web clean-room adapter does not support tool messages yet");
-    }
-    const text = contentText(value.content);
-    const toolCalls = Array.isArray(value.tool_calls)
-      ? value.tool_calls
-          .filter(isRecord)
-          .map((call) => {
-            const fn = isRecord(call.function) ? call.function : call;
-            const name = typeof fn.name === "string" ? fn.name : "";
-            const args =
-              typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {});
-            const id = typeof call.id === "string" ? call.id : "unknown";
-            return name ? `Assistant tool request (${id}) ${name}: ${args}` : "";
-          })
-          .filter(Boolean)
-          .join("\n")
-      : "";
-    const toolResult =
-      value.role === "tool"
-        ? `Tool result${typeof value.tool_call_id === "string" ? ` (${value.tool_call_id})` : ""}: ${text || "(no output)"}`
-        : "";
-    return { role: value.role, text: [toolResult || text, toolCalls].filter(Boolean).join("\n") };
-  });
+  const messages = body.messages.map(normalizePromptMessage);
 
   // Budget each section: the tool contract and the checkpoint are protocol-critical and stay
   // intact; the system prompt and the transcript absorb the trimming.
@@ -707,6 +710,39 @@ export function shouldRetryWithToolReminder(
   // workspace <tool> protocol") is exactly the refusal this predicate must catch.
   if (/<tool>[\s\S]*<\/tool>|<tool_call>[\s\S]*<\/tool_call>/i.test(text)) return false;
 
+  const { hasToolExchange, writeHappened } = summarizeToolHistory(messages);
+  if (hasToolExchange && writeHappened) {
+    // The work is done: any prose here is a completion summary, and nudging it only costs
+    // another tool round trip.
+    return false;
+  }
+
+  // Any reply that talks ABOUT the client tools (or the tool protocol) instead of emitting an
+  // envelope is a miss. Enumerating refusal phrasings was whack-a-mole — two captures alone were
+  // "the client-side workspace tool isn't available in my current tool registry" and "I can't
+  // emit the required workspace <tool> protocol from this interface". A bare mention is the
+  // signal; the post-success guard above still suppresses nudges once a write has landed.
+  if (/\btools?\b|tool_call/i.test(text)) return true;
+
+  // A claim of file work that no tool result supports is the miss we must correct.
+  if (
+    /\b(created|built|wrote|written|saved|updated|added|verified)\b[^.]*\b(file|page|index\.html|html|script)\b/i.test(
+      text
+    )
+  ) {
+    return !writeHappened;
+  }
+
+  if (isRefusedOrHijackedInvocation(text, hasToolExchange)) return true;
+
+  return mentionsRequestedTool(text, tools);
+}
+
+/** Whether the history already holds a tool exchange, and whether a write actually landed. */
+function summarizeToolHistory(messages: unknown): {
+  hasToolExchange: boolean;
+  writeHappened: boolean;
+} {
   const history = Array.isArray(messages) ? messages : [];
   const hasToolExchange = history.some(
     (message) =>
@@ -727,48 +763,23 @@ export function shouldRetryWithToolReminder(
       value
     )
   );
-  if (hasToolExchange && writeHappened) {
-    // The work is done: any prose here is a completion summary, and nudging it only costs
-    // another tool round trip.
-    return false;
-  }
+  return { hasToolExchange, writeHappened };
+}
 
-  // Any reply that talks ABOUT the client tools (or the tool protocol) instead of emitting an
-  // envelope is a miss. Enumerating refusal phrasings was whack-a-mole — two captures alone were
-  // "the client-side workspace tool isn't available in my current tool registry" and "I can't
-  // emit the required workspace <tool> protocol from this interface". A bare mention is the
-  // signal; the post-success guard above still suppresses nudges once a write has landed.
-  if (/\btools?\b|tool_call/i.test(text)) return true;
-
-  // A claim of file work that no tool result supports is the miss we must correct.
-  if (
-    /\b(created|built|wrote|written|saved|updated|added|verified)\b[^.]*\b(file|page|index\.html|html|script)\b/i.test(
+/** A refused/failed invocation, or (before any tool ran) ChatGPT's built-in features taking over. */
+function isRefusedOrHijackedInvocation(text: string, hasToolExchange: boolean): boolean {
+  if (hasToolExchange) {
+    return /\b(not accepted|invocation failed|couldn['’]t complete|could not complete|unable to execute|unable to perform)\b/i.test(
       text
-    )
-  ) {
-    return writeHappened ? false : true;
+    );
   }
-
   // Before any tool has run, the remaining misses are a refused invocation and ChatGPT's own
   // built-in features taking over ("Data analysis isn't available right now").
-  if (!hasToolExchange) {
-    if (
-      /\b(invoke|invoked|invocation|tool call|apply_patch|couldn['’]t complete|cannot complete|unable to complete|unable to execute|unable to perform|not accepted)\b/i.test(
-        text
-      )
-    ) {
-      return true;
-    }
-    if (/\b(data analysis|canvas|browsing|code interpreter)\b/i.test(text)) return true;
-  } else if (
-    /\b(not accepted|invocation failed|couldn['’]t complete|could not complete|unable to execute|unable to perform)\b/i.test(
+  return (
+    /\b(invoke|invoked|invocation|tool call|apply_patch|couldn['’]t complete|cannot complete|unable to complete|unable to execute|unable to perform|not accepted)\b/i.test(
       text
-    )
-  ) {
-    return true;
-  }
-
-  return mentionsRequestedTool(text, tools);
+    ) || /\b(data analysis|canvas|browsing|code interpreter)\b/i.test(text)
+  );
 }
 
 /** True when the reply names one of the client tools it was offered. */
