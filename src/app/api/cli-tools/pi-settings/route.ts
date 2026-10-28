@@ -39,6 +39,47 @@ import {
  * auto-lists models for them, so the entry carries an explicit `models[]`.
  */
 
+type PiRuntimeStatus = Awaited<ReturnType<typeof getCliRuntimeStatus>>;
+type PiModelsRead = Awaited<ReturnType<typeof readPiModelsJson>>;
+
+function piRuntimeFields(runtime: PiRuntimeStatus, modelsPath: string) {
+  return {
+    installed: runtime.installed,
+    runnable: runtime.runnable,
+    command: runtime.command,
+    commandPath: runtime.commandPath,
+    runtimeMode: runtime.runtimeMode,
+    reason: runtime.reason,
+    modelsPath,
+  };
+}
+
+/** The OmniRoute provider state the current models.json holds. */
+function piProviderState({ config, error }: PiModelsRead) {
+  const provider = readOmniRoutePiProvider(config);
+  const { apiPort } = getRuntimePorts();
+  const unowned = hasUnownedOmniRoutePiProvider(config, apiPort);
+  const currentProvider = provider ?? (unowned ? config?.providers.omniroute : null);
+  const models = Array.isArray(currentProvider?.models) ? currentProvider.models : null;
+  const present = hasOmniRoutePiProvider(config) || unowned;
+  return {
+    // Surface a corrupt or non-models JSON file instead of misreading it as
+    // "not configured" — the user needs to know their config is broken.
+    configError: error,
+    // Provider names Pi currently knows about (informational for the card).
+    providers: config ? Object.keys(config.providers || {}) : null,
+    hasOmniRoute: present,
+    // A working but unowned entry: report it so the card shows "configured",
+    // while signalling that Reset will not touch it.
+    omniRouteUnowned: unowned,
+    omniRouteOwned: hasOmniRoutePiProvider(config),
+    baseUrl: typeof currentProvider?.baseUrl === "string" ? currentProvider.baseUrl : null,
+    model: Array.isArray(models) && models[0]?.id ? String(models[0].id) : null,
+    apiKeyId: null,
+    message: error ?? undefined,
+  };
+}
+
 // GET — detect the pi binary and report the current OmniRoute provider state
 export async function GET(request: Request) {
   const authError = await requireCliToolsAuth(request);
@@ -50,13 +91,7 @@ export async function GET(request: Request) {
 
     if (!runtime.installed || !runtime.runnable) {
       return NextResponse.json({
-        installed: runtime.installed,
-        runnable: runtime.runnable,
-        command: runtime.command,
-        commandPath: runtime.commandPath,
-        runtimeMode: runtime.runtimeMode,
-        reason: runtime.reason,
-        modelsPath,
+        ...piRuntimeFields(runtime, modelsPath),
         providers: null,
         hasOmniRoute: false,
         message:
@@ -66,36 +101,9 @@ export async function GET(request: Request) {
       });
     }
 
-    const { config, error } = await readPiModelsJson();
-    const provider = readOmniRoutePiProvider(config);
-    const { apiPort } = getRuntimePorts();
-    const unowned = hasUnownedOmniRoutePiProvider(config, apiPort);
-    const currentProvider = provider ?? (unowned ? config?.providers.omniroute : null);
-    const models = Array.isArray(currentProvider?.models) ? currentProvider.models : null;
-    const present = hasOmniRoutePiProvider(config) || unowned;
-
     return NextResponse.json({
-      installed: runtime.installed,
-      runnable: runtime.runnable,
-      command: runtime.command,
-      commandPath: runtime.commandPath,
-      runtimeMode: runtime.runtimeMode,
-      reason: runtime.reason,
-      modelsPath,
-      // Surface a corrupt or non-models JSON file instead of misreading it as
-      // "not configured" — the user needs to know their config is broken.
-      configError: error,
-      // Provider names Pi currently knows about (informational for the card).
-      providers: config ? Object.keys(config.providers || {}) : null,
-      hasOmniRoute: present,
-      // A working but unowned entry: report it so the card shows "configured",
-      // while signalling that Reset will not touch it.
-      omniRouteUnowned: unowned,
-      omniRouteOwned: hasOmniRoutePiProvider(config),
-      baseUrl: typeof currentProvider?.baseUrl === "string" ? currentProvider.baseUrl : null,
-      model: Array.isArray(models) && models[0]?.id ? String(models[0].id) : null,
-      apiKeyId: null,
-      message: error ?? undefined,
+      ...piRuntimeFields(runtime, modelsPath),
+      ...piProviderState(await readPiModelsJson()),
     });
   } catch (err) {
     return NextResponse.json({ error: { message: sanitizeErrorMessage(err) } }, { status: 500 });

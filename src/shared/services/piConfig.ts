@@ -101,6 +101,46 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Why one `providers.<id>` entry is not loadable by Pi, or null when it is. */
+function piProviderEntryError(providerId: string, provider: unknown): string | null {
+  if (!isPlainObject(provider)) return `models.json provider "${providerId}" must be an object`;
+  for (const field of ["name", "baseUrl", "apiKey", "api"]) {
+    if (provider[field] !== undefined && typeof provider[field] !== "string") {
+      return `models.json provider "${providerId}" field "${field}" must be a string`;
+    }
+  }
+  if (provider.models === undefined) return null;
+  if (!Array.isArray(provider.models)) {
+    return `models.json provider "${providerId}" field "models" must be an array`;
+  }
+  const everyModelHasId = provider.models.every(
+    (model) => isPlainObject(model) && typeof model.id === "string" && Boolean(model.id)
+  );
+  return everyModelHasId
+    ? null
+    : `models.json provider "${providerId}" models must contain objects with an id`;
+}
+
+/** Why a parsed document is not a models.json Pi can load, or null when it is. */
+function piModelsJsonError(parsed: unknown): string | null {
+  if (!isPlainObject(parsed)) return "models.json must be a JSON object";
+  if (parsed.providers === undefined) {
+    // A file without `providers` is not a models.json Pi can load — report it
+    // rather than silently rewriting the user's unrelated file.
+    return 'models.json has no "providers" object';
+  }
+  if (!isPlainObject(parsed.providers)) return 'models.json "providers" must be an object';
+  for (const [providerId, provider] of Object.entries(parsed.providers)) {
+    const error = piProviderEntryError(providerId, provider);
+    if (error) return error;
+  }
+  return null;
+}
+
 /**
  * Read and parse models.json.
  *
@@ -133,64 +173,9 @@ export async function readPiModelsJson(
     };
   }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { config: null, error: "models.json must be a JSON object" };
-  }
-
-  const root = parsed as Record<string, unknown>;
-  if (root.providers === undefined) {
-    // A file without `providers` is not a models.json Pi can load — report it
-    // rather than silently rewriting the user's unrelated file.
-    return { config: null, error: 'models.json has no "providers" object' };
-  }
-
-  if (!root.providers || typeof root.providers !== "object" || Array.isArray(root.providers)) {
-    return { config: null, error: 'models.json "providers" must be an object' };
-  }
-
-  for (const [providerId, provider] of Object.entries(root.providers)) {
-    if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
-      return {
-        config: null,
-        error: `models.json provider "${providerId}" must be an object`,
-      };
-    }
-
-    const entry = provider as Record<string, unknown>;
-    for (const field of ["name", "baseUrl", "apiKey", "api"]) {
-      if (entry[field] !== undefined && typeof entry[field] !== "string") {
-        return {
-          config: null,
-          error: `models.json provider "${providerId}" field "${field}" must be a string`,
-        };
-      }
-    }
-
-    if (entry.models !== undefined) {
-      if (!Array.isArray(entry.models)) {
-        return {
-          config: null,
-          error: `models.json provider "${providerId}" field "models" must be an array`,
-        };
-      }
-      for (const model of entry.models) {
-        if (
-          !model ||
-          typeof model !== "object" ||
-          Array.isArray(model) ||
-          typeof (model as Record<string, unknown>).id !== "string" ||
-          !(model as Record<string, unknown>).id
-        ) {
-          return {
-            config: null,
-            error: `models.json provider "${providerId}" models must contain objects with an id`,
-          };
-        }
-      }
-    }
-  }
-
-  return { config: root as unknown as ModelsJson, error: null };
+  const error = piModelsJsonError(parsed);
+  if (error) return { config: null, error };
+  return { config: parsed as ModelsJson, error: null };
 }
 
 /**
