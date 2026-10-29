@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 
-const { mkdir, mkdtemp, writeFile, readFile, rm, chmod } = fsp;
+const { mkdir, mkdtemp, writeFile, readFile, rm, symlink } = fsp;
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -78,7 +78,7 @@ test.afterEach(restoreEnv);
 
 test.after(async () => {
   try {
-    const { resetDbInstance } = await import("../../../src/lib/db/core.ts");
+    const { resetDbInstance } = await import("../../src/lib/db/core.ts");
     resetDbInstance();
   } catch {
     // the DB was never opened
@@ -281,16 +281,17 @@ test("POST refuses a corrupt models.json with 409 and leaves it byte-identical",
 });
 
 test("POST error bodies never leak a stack trace", async () => {
-  // Point PI_CODING_AGENT_DIR at a path that cannot be written to, so the write
-  // throws and the route goes through sanitizeErrorMessage().
-  const unwritable = await mkdir(path.join(TMP_ROOT, "unwritable"), { recursive: true });
-  // Valid but empty models.json: the pre-write read passes and only the write
-  // itself fails (a `{}` file would be refused earlier with the 409 contract).
-  await writeFile(path.join(unwritable, "models.json"), '{"providers":{}}', "utf-8");
-  await chmod(path.join(unwritable, "models.json"), 0o444);
-  tempDirs.add(unwritable);
+  // Make only the write fail, independently of the user running the suite: a
+  // chmod-based denial is bypassed by root (the merge train runs as root), so
+  // models.json is instead a dangling symlink whose target directory does not
+  // exist. The pre-write read sees ENOENT (fresh start, no 409 refusal), the
+  // backup is skipped, and writeFile follows the link into a missing directory
+  // and throws ENOENT for every uid, so the route goes through
+  // sanitizeErrorMessage().
+  const dir = await tempAgentDir();
+  const missingTarget = path.join(dir, "missing-parent", "models.json");
+  await symlink(missingTarget, path.join(dir, "models.json"));
 
-  process.env.PI_CODING_AGENT_DIR = unwritable;
   process.env.OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE = "1";
   const { POST } = await importRoute("apply-nostack");
 
@@ -304,11 +305,11 @@ test("POST error bodies never leak a stack trace", async () => {
 
   const body = await response.json();
 
+  assert.equal(response.status, 500, "the failed write must surface as a 500");
   assert.ok(body.error, "error must be present");
   assert.ok(!body.error.message.includes("at /"), "must not leak a stack trace");
   assert.ok(!body.error.message.includes(".ts:"), "must not leak source locations");
-
-  await chmod(path.join(unwritable, "models.json"), 0o644);
+  assert.equal(fs.existsSync(missingTarget), false, "nothing may be written");
 });
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
